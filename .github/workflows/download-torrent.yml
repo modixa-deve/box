@@ -16,9 +16,6 @@ jobs:
       issue_number: ${{ github.event.issue.number }}
       
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        
       - name: Parse issue body
         uses: stefanbuck/github-issue-parser@v3
         id: issue-parser
