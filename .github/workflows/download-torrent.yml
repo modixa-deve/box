@@ -102,7 +102,7 @@ jobs:
       - name: Install aria2c
         run: |
           sudo apt-get update
-          sudo apt-get install -y aria2
+          sudo apt-get install -y aria2 jq
           
       - name: Download public tracker list
         run: |
@@ -177,19 +177,6 @@ jobs:
           RELEASE_NAME=$(echo "$FILENAME" | sed 's/\.[^.]*$//' | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]//g' | cut -c1-40)
           RELEASE_TAG="${TIMESTAMP}-${RELEASE_NAME}"
           
-          # Build file list with URLs for release description
-          FILE_LIST=""
-          while IFS= read -r -d '' filepath; do
-            filename=$(basename "$filepath")
-            # URL encode the filename (replace spaces with %20, etc)
-            encoded_filename=$(printf '%s' "$filename" | jq -sRr @uri)
-            download_url="${{ github.server_url }}/${{ github.repository }}/releases/download/${RELEASE_TAG}/${encoded_filename}"
-            FILE_LIST="${FILE_LIST}- [\`${filename}\`](${download_url})"$'\n'
-          done < <(find ./downloads -type f -print0)
-          
-          # Remove trailing newline
-          FILE_LIST="${FILE_LIST%$'\n'}"
-          
           # Save outputs (escape special characters)
           {
             echo "filename<<EOF"
@@ -198,10 +185,6 @@ jobs:
             echo "release_tag=$RELEASE_TAG"
             echo "file_count=$FILE_COUNT"
             echo "timestamp=$TIMESTAMP"
-            echo "file_list<<FILELIST_EOF"
-            printf '%s' "$FILE_LIST"
-            echo ""
-            echo "FILELIST_EOF"
           } >> $GITHUB_OUTPUT
           
       - name: Create Release for this torrent
@@ -217,7 +200,7 @@ jobs:
             **Files:** ${{ steps.download.outputs.file_count }}
             
             ## Download Links
-            ${{ steps.download.outputs.file_list }}
+            _Generating download links..._
             
             ---
             Downloaded from issue #${{ needs.prepare.outputs.issue_number }}
@@ -227,14 +210,51 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
-      - name: Comment - Success
-        if: success()
-        env:
-          FILE_LIST: ${{ steps.download.outputs.file_list }}
+      - name: Get release assets and update description
         uses: actions/github-script@v7
         with:
           script: |
-            const fileList = process.env.FILE_LIST;
+            // Wait a moment for assets to be processed
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Get the release by tag
+            const { data: release } = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag: '${{ steps.download.outputs.release_tag }}'
+            });
+            
+            // Build download links from actual assets
+            let fileList = '';
+            for (const asset of release.assets) {
+              fileList += `- [\`${asset.name}\`](${asset.browser_download_url})\n`;
+            }
+            
+            // Update release description with real URLs
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: release.id,
+              body: `**Timestamp:** ${{ steps.download.outputs.timestamp }}
+            **Torrent #:** ${{ matrix.magnet.index }}
+            **Info Hash:** \`${{ matrix.magnet.hash }}\`
+            **Files:** ${{ steps.download.outputs.file_count }}
+            
+            ## Download Links
+            ${fileList}
+            ---
+            Downloaded from issue #${{ needs.prepare.outputs.issue_number }}`
+            });
+            
+            // Save file list for comment
+            core.exportVariable('FILE_LIST_OUTPUT', fileList);
+          
+      - name: Comment - Success
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fileList = process.env.FILE_LIST_OUTPUT || 'Check the release page for download links.';
             
             github.rest.issues.createComment({
               issue_number: ${{ needs.prepare.outputs.issue_number }},
@@ -268,7 +288,7 @@ jobs:
             
             Failed to download. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.`
             })
-
+  
   finalize:
     needs: [prepare, download-and-release]
     if: always()
