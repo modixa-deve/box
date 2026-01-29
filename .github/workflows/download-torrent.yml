@@ -13,6 +13,7 @@ jobs:
     outputs:
       magnet_links: ${{ steps.parse.outputs.magnet_links }}
       total_count: ${{ steps.parse.outputs.total_count }}
+      issue_number: ${{ github.event.issue.number }}
       
     steps:
       - name: Checkout repository
@@ -80,14 +81,15 @@ jobs:
             **Magnet Links:**
             ${magnetList}
             
-            ⚡ All torrents will download in parallel. Please wait...`
+            ⚡ Each torrent will create its own release immediately upon completion!`
             })
 
-  download:
+  download-and-release:
     needs: prepare
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      issues: write
     strategy:
       matrix:
         magnet: ${{ fromJson(needs.prepare.outputs.magnet_links) }}
@@ -105,6 +107,17 @@ jobs:
           curl -o trackers.txt https://cf.trackerslist.com/best.txt
           TRACKERS=$(cat trackers.txt | tr '\n' ',' | sed 's/,$//')
           echo "TRACKER_LIST=$TRACKERS" >> $GITHUB_ENV
+          
+      - name: Comment - Starting this torrent
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: ${{ needs.prepare.outputs.issue_number }},
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `⏬ **Torrent #${{ matrix.magnet.index }} - Download Started**\n\nInfo Hash: \`${{ matrix.magnet.hash }}\`\n\nDownloading now...`
+            })
           
       - name: Download torrent
         id: download
@@ -137,121 +150,108 @@ jobs:
             --console-log-level=notice \
             "${{ matrix.magnet.link }}"
           
-          # Get downloaded filename
+          echo "Download completed!"
+          ls -lah ./downloads
+          
+          # Get downloaded filename(s)
+          FILE_COUNT=$(find ./downloads -type f | wc -l)
           FILENAME=$(find ./downloads -type f | head -n 1 | xargs basename)
-          echo "Downloaded: $FILENAME"
-          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
-          
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: torrent-${{ matrix.magnet.index }}-${{ matrix.magnet.hash }}
-          path: ./downloads/*
-          retention-days: 1
-
-  create-release:
-    needs: [prepare, download]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      issues: write
-      
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: all-downloads
-          
-      - name: Organize files
-        id: organize
-        run: |
-          mkdir -p release-files
-          
-          # Move all files from artifact directories to release-files
-          find all-downloads -type f -exec mv {} release-files/ \;
-          
-          echo "Files to release:"
-          ls -lah release-files/
-          
-          FILE_COUNT=$(find release-files -type f | wc -l)
-          echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
           
           # Create release name
-          FIRST_FILE=$(find release-files -type f | head -n 1 | xargs basename)
-          RELEASE_NAME=$(echo "$FIRST_FILE" | sed 's/\.[^.]*$//' | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]//g' | cut -c1-40)
-          RELEASE_TAG="${RELEASE_NAME}-$(date +%s)"
+          RELEASE_NAME=$(echo "$FILENAME" | sed 's/\.[^.]*$//' | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]//g' | cut -c1-40)
+          RELEASE_TAG="torrent-${{ matrix.magnet.index }}-${RELEASE_NAME}-$(date +%s)"
           
+          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
           echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
+          echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
           
-      - name: Create Release
+      - name: Create Release for this torrent
+        id: create_release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.organize.outputs.release_tag }}
-          name: "Download Bundle - ${{ steps.organize.outputs.file_count }} file(s)"
+          tag_name: ${{ steps.download.outputs.release_tag }}
+          name: "Torrent #${{ matrix.magnet.index }} - ${{ steps.download.outputs.filename }}"
           body: |
-            **Files Downloaded:** ${{ steps.organize.outputs.file_count }}
-            **Download Method:** Parallel processing
+            **Torrent #${{ matrix.magnet.index }}**
+            **Info Hash:** `${{ matrix.magnet.hash }}`
+            **Files:** ${{ steps.download.outputs.file_count }}
             
             ---
-            Downloaded via torrent from issue #${{ github.event.issue.number }}
-          files: release-files/*
+            Downloaded from issue #${{ needs.prepare.outputs.issue_number }}
+          files: ./downloads/*
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
-      - name: Comment on issue - Success
+      - name: Comment - Success
+        if: success()
         uses: actions/github-script@v7
         with:
           script: |
             github.rest.issues.createComment({
-              issue_number: context.issue.number,
+              issue_number: ${{ needs.prepare.outputs.issue_number }},
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `✅ **All Downloads Complete!**
+              body: `✅ **Torrent #${{ matrix.magnet.index }} - Complete!**
+
+            **Info Hash:** \`${{ matrix.magnet.hash }}\`
+            **Filename:** \`${{ steps.download.outputs.filename }}\`
+            **Files:** ${{ steps.download.outputs.file_count }}
             
-            **Summary:**
-            - Total Files: ${{ steps.organize.outputs.file_count }}
-            - Download Method: Parallel processing (faster!)
-            
-            📦 **Release Created:** [${{ steps.organize.outputs.release_tag }}](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.organize.outputs.release_tag }})`
-            })
-            
-            github.rest.issues.update({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'closed',
-              state_reason: 'completed'
+            📦 **Release:** [${{ steps.download.outputs.release_tag }}](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.download.outputs.release_tag }})`
             })
           
-      - name: Comment on issue - Failure
+      - name: Comment - Failure
         if: failure()
         uses: actions/github-script@v7
         with:
           script: |
             github.rest.issues.createComment({
-              issue_number: context.issue.number,
+              issue_number: ${{ needs.prepare.outputs.issue_number }},
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '❌ **Release creation failed**\n\nSome torrents may have downloaded successfully. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.'
+              body: `❌ **Torrent #${{ matrix.magnet.index }} - Failed**
+
+            **Info Hash:** \`${{ matrix.magnet.hash }}\`
+            
+            Failed to download. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.`
             })
 
-  notify-failures:
-    needs: [prepare, download]
-    if: failure()
+  finalize:
+    needs: [prepare, download-and-release]
+    if: always()
     runs-on: ubuntu-latest
     permissions:
       issues: write
       
     steps:
-      - name: Comment on issue - Download failures
+      - name: Final summary comment
         uses: actions/github-script@v7
         with:
           script: |
+            const totalCount = '${{ needs.prepare.outputs.total_count }}';
+            const conclusion = '${{ needs.download-and-release.result }}';
+            
+            let message = `🏁 **All Torrents Processed**\n\n**Total:** ${totalCount} torrent(s)\n`;
+            
+            if (conclusion === 'success') {
+              message += `\n✅ All downloads completed successfully!\n\nCheck the releases page for your files.`;
+            } else if (conclusion === 'failure') {
+              message += `\n⚠️ Some downloads failed, but successful ones have been released.\n\nCheck individual torrent comments above for details.`;
+            }
+            
             github.rest.issues.createComment({
-              issue_number: context.issue.number,
+              issue_number: ${{ needs.prepare.outputs.issue_number }},
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '⚠️ **Some downloads failed**\n\nOne or more torrents failed to download. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.\n\nSuccessful downloads (if any) will still be included in the release.'
+              body: message
+            })
+            
+            github.rest.issues.update({
+              issue_number: ${{ needs.prepare.outputs.issue_number }},
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'closed',
+              state_reason: 'completed'
             })
