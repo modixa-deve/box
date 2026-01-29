@@ -46,9 +46,9 @@ jobs:
           
       - name: Download public tracker list
         run: |
-          # Download best trackers list from trackerslist
+          # Download best trackers list
           curl -o trackers.txt https://cf.trackerslist.com/best.txt
-          # Convert to comma-separated list for aria2c
+          # Convert to comma-separated list
           TRACKERS=$(cat trackers.txt | tr '\n' ',' | sed 's/,$//')
           echo "TRACKER_LIST=$TRACKERS" >> $GITHUB_ENV
           echo "Added $(cat trackers.txt | wc -l) public trackers"
@@ -65,6 +65,8 @@ jobs:
             --seed-time=0 \
             --max-overall-upload-limit=1K \
             --bt-tracker="$TRACKER_LIST" \
+            --bt-tracker-connect-timeout=5 \
+            --bt-tracker-timeout=10 \
             --bt-max-peers=100 \
             --bt-request-peer-speed-limit=100K \
             --max-connection-per-server=16 \
@@ -72,9 +74,12 @@ jobs:
             --split=16 \
             --min-split-size=1M \
             --enable-dht=true \
+            --enable-dht6=false \
             --bt-enable-lpd=true \
+            --enable-peer-exchange=true \
             --follow-torrent=mem \
             --summary-interval=10 \
+            --console-log-level=notice \
             "$MAGNET_LINK"
           
           echo "Download completed!"
@@ -82,6 +87,12 @@ jobs:
           
           # Get the downloaded filename
           FILENAME=$(find ./downloads -type f | head -n 1 | xargs basename)
+          
+          if [ -z "$FILENAME" ]; then
+            echo "Error: No files downloaded"
+            exit 1
+          fi
+          
           # Sanitize for release tag
           RELEASE_NAME=$(echo "$FILENAME" | sed 's/\.[^.]*$//' | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]//g')
           RELEASE_NAME=$(echo "$RELEASE_NAME" | cut -c1-50)
