@@ -125,6 +125,7 @@ jobs:
         id: download
         run: |
           mkdir -p downloads
+          mkdir -p downloads-too-large
           
           # Generate timestamp at start
           TIMESTAMP=$(date +%s)
@@ -159,8 +160,42 @@ jobs:
           echo "Download completed!"
           ls -lah ./downloads
           
-          # Count files (including files in subdirectories)
+          # GitHub release asset limit: 2GB (2147483648 bytes)
+          MAX_SIZE=2147483648
+          
+          # Check file sizes and move large files
+          LARGE_FILES=""
+          LARGE_FILE_COUNT=0
+          while IFS= read -r -d '' filepath; do
+            filesize=$(stat -c%s "$filepath")
+            filename=$(basename "$filepath")
+            if [ "$filesize" -gt "$MAX_SIZE" ]; then
+              echo "⚠️  File too large for GitHub release: $filename ($(numfmt --to=iec-i --suffix=B $filesize))"
+              mv "$filepath" ./downloads-too-large/
+              LARGE_FILES="${LARGE_FILES}- \`${filename}\` ($(numfmt --to=iec-i --suffix=B $filesize))\n"
+              LARGE_FILE_COUNT=$((LARGE_FILE_COUNT + 1))
+            fi
+          done < <(find ./downloads -type f -print0)
+          
+          # Count remaining files
           FILE_COUNT=$(find ./downloads -type f | wc -l)
+          
+          if [ "$FILE_COUNT" -eq 0 ] && [ "$LARGE_FILE_COUNT" -gt 0 ]; then
+            echo "Error: All files exceed GitHub's 2GB limit"
+            {
+              echo "filename=All files too large"
+              echo "release_tag=$TIMESTAMP-too-large"
+              echo "file_count=0"
+              echo "timestamp=$TIMESTAMP"
+              echo "large_file_count=$LARGE_FILE_COUNT"
+              echo "large_files<<LARGE_EOF"
+              printf '%s' "$LARGE_FILES"
+              echo ""
+              echo "LARGE_EOF"
+              echo "skip_release=true"
+            } >> $GITHUB_OUTPUT
+            exit 1
+          fi
           
           # Get first filename (properly handling spaces)
           FIRST_FILE=$(find ./downloads -type f -print0 | head -z -n 1)
@@ -172,6 +207,7 @@ jobs:
           
           echo "First file: $FILENAME"
           echo "Total files: $FILE_COUNT"
+          echo "Large files skipped: $LARGE_FILE_COUNT"
           
           # Create release name (properly handle spaces)
           RELEASE_NAME=$(echo "$FILENAME" | sed 's/\.[^.]*$//' | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]//g' | cut -c1-40)
@@ -185,6 +221,12 @@ jobs:
             echo "release_tag=$RELEASE_TAG"
             echo "file_count=$FILE_COUNT"
             echo "timestamp=$TIMESTAMP"
+            echo "large_file_count=$LARGE_FILE_COUNT"
+            echo "large_files<<LARGE_EOF"
+            printf '%s' "$LARGE_FILES"
+            echo ""
+            echo "LARGE_EOF"
+            echo "skip_release=false"
           } >> $GITHUB_OUTPUT
           
       - name: Create Release for this torrent
@@ -197,7 +239,7 @@ jobs:
             **Timestamp:** ${{ steps.download.outputs.timestamp }}
             **Torrent #:** ${{ matrix.magnet.index }}
             **Info Hash:** `${{ matrix.magnet.hash }}`
-            **Files:** ${{ steps.download.outputs.file_count }}
+            **Files Uploaded:** ${{ steps.download.outputs.file_count }}
             
             ## Download Links
             _Generating download links..._
@@ -230,6 +272,15 @@ jobs:
               fileList += `- [\`${asset.name}\`](${asset.browser_download_url})\n`;
             }
             
+            // Add warning about large files if any
+            const largeFileCount = '${{ steps.download.outputs.large_file_count }}';
+            const largeFiles = `${{ steps.download.outputs.large_files }}`;
+            let largeFileWarning = '';
+            
+            if (largeFileCount > 0) {
+              largeFileWarning = `\n## ⚠️ Files Too Large for GitHub (${largeFileCount})\n\nThe following files exceed GitHub's 2GB limit and could not be uploaded:\n${largeFiles}\n`;
+            }
+            
             // Update release description with real URLs
             await github.rest.repos.updateRelease({
               owner: context.repo.owner,
@@ -238,16 +289,17 @@ jobs:
               body: `**Timestamp:** ${{ steps.download.outputs.timestamp }}
             **Torrent #:** ${{ matrix.magnet.index }}
             **Info Hash:** \`${{ matrix.magnet.hash }}\`
-            **Files:** ${{ steps.download.outputs.file_count }}
+            **Files Uploaded:** ${{ steps.download.outputs.file_count }}
             
             ## Download Links
-            ${fileList}
+            ${fileList}${largeFileWarning}
             ---
             Downloaded from issue #${{ needs.prepare.outputs.issue_number }}`
             });
             
             // Save file list for comment
             core.exportVariable('FILE_LIST_OUTPUT', fileList);
+            core.exportVariable('LARGE_FILE_WARNING', largeFileWarning);
           
       - name: Comment - Success
         if: success()
@@ -255,6 +307,7 @@ jobs:
         with:
           script: |
             const fileList = process.env.FILE_LIST_OUTPUT || 'Check the release page for download links.';
+            const largeFileWarning = process.env.LARGE_FILE_WARNING || '';
             
             github.rest.issues.createComment({
               issue_number: ${{ needs.prepare.outputs.issue_number }},
@@ -265,12 +318,12 @@ jobs:
             **Timestamp:** ${{ steps.download.outputs.timestamp }}
             **Info Hash:** \`${{ matrix.magnet.hash }}\`
             **Filename:** \`${{ steps.download.outputs.filename }}\`
-            **Files:** ${{ steps.download.outputs.file_count }}
+            **Files Uploaded:** ${{ steps.download.outputs.file_count }}
             
             📦 **Release:** [${{ steps.download.outputs.release_tag }}](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.download.outputs.release_tag }})
             
             **Download Links:**
-            ${fileList}`
+            ${fileList}${largeFileWarning}`
             })
           
       - name: Comment - Failure
@@ -288,7 +341,7 @@ jobs:
             
             Failed to download. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.`
             })
-  
+
   finalize:
     needs: [prepare, download-and-release]
     if: always()
