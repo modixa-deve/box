@@ -2,11 +2,10 @@ name: Download Torrent and Create Release
 
 on:
   issues:
-    types: [opened, labeled]
+    types: [opened]
 
 jobs:
   download:
-    # Only run if issue has the download-request label
     if: contains(github.event.issue.labels.*.name, 'download-request')
     runs-on: ubuntu-latest
     permissions:
@@ -62,17 +61,32 @@ jobs:
           echo "Download completed!"
           ls -lah ./downloads
           
+          # Get the downloaded filename (first file in downloads directory)
+          FILENAME=$(ls -1 ./downloads | head -n 1)
+          # Remove extension and sanitize for release tag
+          RELEASE_NAME=$(echo "$FILENAME" | sed 's/\.[^.]*$//' | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]//g')
+          # Truncate to 50 characters max
+          RELEASE_NAME=$(echo "$RELEASE_NAME" | cut -c1-50)
+          # Add timestamp to make unique
+          RELEASE_TAG="${RELEASE_NAME}-$(date +%s)"
+          
+          echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
+          echo "release_name=$FILENAME" >> $GITHUB_OUTPUT
+          
       - name: Create Release and Upload Files
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ fromJson(steps.issue-parser.outputs.jsonString).release_name }}
-          name: ${{ fromJson(steps.issue-parser.outputs.jsonString).release_name }}
+          tag_name: ${{ steps.download.outputs.release_tag }}
+          name: ${{ steps.download.outputs.release_name }}
           body: |
+            **Downloaded File:** ${{ steps.download.outputs.release_name }}
+            
             ${{ fromJson(steps.issue-parser.outputs.jsonString).description }}
             
             ---
             Downloaded via torrent from issue #${{ github.event.issue.number }}
-          files: ./downloads/**/*
+            Download completed at: ${{ github.event.repository.updated_at }}
+          files: ./downloads/*
           draft: false
           prerelease: false
         env:
@@ -87,13 +101,14 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '✅ Download complete! Release created: ${{ fromJson(steps.issue-parser.outputs.jsonString).release_name }}'
+              body: '✅ Download complete! Release created: [${{ steps.download.outputs.release_name }}](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.download.outputs.release_tag }})'
             })
             github.rest.issues.update({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              state: 'closed'
+              state: 'closed',
+              state_reason: 'completed'
             })
             
       - name: Comment on issue - Failure
@@ -105,5 +120,5 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '❌ Download failed. Please check the workflow logs for details.'
+              body: '❌ Download failed. Please check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.'
             })
