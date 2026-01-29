@@ -46,68 +46,102 @@ jobs:
           
       - name: Download public tracker list
         run: |
-          # Download best trackers list
           curl -o trackers.txt https://cf.trackerslist.com/best.txt
-          # Convert to comma-separated list
           TRACKERS=$(cat trackers.txt | tr '\n' ',' | sed 's/,$//')
           echo "TRACKER_LIST=$TRACKERS" >> $GITHUB_ENV
           echo "Added $(cat trackers.txt | wc -l) public trackers"
           
-      - name: Download torrent
+      - name: Parse and download torrents
         id: download
         run: |
           mkdir -p downloads
-          MAGNET_LINK="${{ fromJson(steps.issue-parser.outputs.jsonString).magnet_link }}"
           
-          echo "Starting download with aria2c..."
-          aria2c \
-            --dir=./downloads \
-            --seed-time=0 \
-            --max-overall-upload-limit=1K \
-            --bt-tracker="$TRACKER_LIST" \
-            --bt-tracker-connect-timeout=5 \
-            --bt-tracker-timeout=10 \
-            --bt-max-peers=100 \
-            --bt-request-peer-speed-limit=100K \
-            --max-connection-per-server=16 \
-            --max-concurrent-downloads=1 \
-            --split=16 \
-            --min-split-size=1M \
-            --enable-dht=true \
-            --enable-dht6=false \
-            --bt-enable-lpd=true \
-            --enable-peer-exchange=true \
-            --follow-torrent=mem \
-            --summary-interval=10 \
-            --console-log-level=notice \
-            "$MAGNET_LINK"
+          # Get magnet links from parsed issue
+          MAGNET_LINKS="${{ fromJson(steps.issue-parser.outputs.jsonString).magnet_links }}"
           
-          echo "Download completed!"
-          ls -lah ./downloads
+          # Save magnet links to file (one per line)
+          echo "$MAGNET_LINKS" > magnets.txt
           
-          # Get the downloaded filename
-          FILENAME=$(find ./downloads -type f | head -n 1 | xargs basename)
+          # Count total magnets
+          TOTAL_MAGNETS=$(grep -c "^magnet:" magnets.txt || echo "0")
+          echo "Found $TOTAL_MAGNETS magnet link(s)"
           
-          if [ -z "$FILENAME" ]; then
-            echo "Error: No files downloaded"
+          if [ "$TOTAL_MAGNETS" -eq 0 ]; then
+            echo "Error: No valid magnet links found"
             exit 1
           fi
           
-          # Sanitize for release tag
-          RELEASE_NAME=$(echo "$FILENAME" | sed 's/\.[^.]*$//' | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]//g')
-          RELEASE_NAME=$(echo "$RELEASE_NAME" | cut -c1-50)
+          # Download each magnet link
+          COUNTER=1
+          while IFS= read -r MAGNET_LINK; do
+            # Skip empty lines
+            if [ -z "$MAGNET_LINK" ]; then
+              continue
+            fi
+            
+            # Skip lines that don't start with magnet:
+            if [[ ! "$MAGNET_LINK" =~ ^magnet: ]]; then
+              continue
+            fi
+            
+            echo "============================================"
+            echo "Downloading torrent $COUNTER of $TOTAL_MAGNETS"
+            echo "============================================"
+            
+            aria2c \
+              --dir=./downloads \
+              --seed-time=0 \
+              --max-overall-upload-limit=1K \
+              --bt-tracker="$TRACKER_LIST" \
+              --bt-tracker-connect-timeout=5 \
+              --bt-tracker-timeout=10 \
+              --bt-max-peers=100 \
+              --bt-request-peer-speed-limit=100K \
+              --max-connection-per-server=16 \
+              --split=16 \
+              --min-split-size=1M \
+              --enable-dht=true \
+              --enable-dht6=false \
+              --bt-enable-lpd=true \
+              --enable-peer-exchange=true \
+              --follow-torrent=mem \
+              --summary-interval=10 \
+              --console-log-level=notice \
+              "$MAGNET_LINK" || echo "Warning: Failed to download torrent $COUNTER"
+            
+            COUNTER=$((COUNTER + 1))
+          done < magnets.txt
+          
+          echo "============================================"
+          echo "All downloads completed!"
+          echo "============================================"
+          ls -lah ./downloads
+          
+          # Count downloaded files
+          FILE_COUNT=$(find ./downloads -type f | wc -l)
+          
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "Error: No files were downloaded"
+            exit 1
+          fi
+          
+          echo "Successfully downloaded $FILE_COUNT file(s)"
+          
+          # Create release name from first file or timestamp
+          FIRST_FILE=$(find ./downloads -type f | head -n 1 | xargs basename)
+          RELEASE_NAME=$(echo "$FIRST_FILE" | sed 's/\.[^.]*$//' | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]//g' | cut -c1-40)
           RELEASE_TAG="${RELEASE_NAME}-$(date +%s)"
           
           echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
-          echo "release_name=$FILENAME" >> $GITHUB_OUTPUT
+          echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
           
       - name: Create Release and Upload Files
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.download.outputs.release_tag }}
-          name: ${{ steps.download.outputs.release_name }}
+          name: "Download Bundle - ${{ steps.download.outputs.file_count }} file(s)"
           body: |
-            **Downloaded File:** ${{ steps.download.outputs.release_name }}
+            **Files Downloaded:** ${{ steps.download.outputs.file_count }}
             
             ${{ fromJson(steps.issue-parser.outputs.jsonString).description }}
             
@@ -128,7 +162,7 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '✅ Download complete! Release created: [${{ steps.download.outputs.release_name }}](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.download.outputs.release_tag }})'
+              body: '✅ Download complete! Successfully downloaded ${{ steps.download.outputs.file_count }} file(s).\n\nRelease: [${{ steps.download.outputs.release_tag }}](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.download.outputs.release_tag }})'
             })
             github.rest.issues.update({
               issue_number: context.issue.number,
