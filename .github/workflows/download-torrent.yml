@@ -44,6 +44,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y aria2
           
+      - name: Download public tracker list
+        run: |
+          # Download best trackers list from trackerslist
+          curl -o trackers.txt https://cf.trackerslist.com/best.txt
+          # Convert to comma-separated list for aria2c
+          TRACKERS=$(cat trackers.txt | tr '\n' ',' | sed 's/,$//')
+          echo "TRACKER_LIST=$TRACKERS" >> $GITHUB_ENV
+          echo "Added $(cat trackers.txt | wc -l) public trackers"
+          
       - name: Download torrent
         id: download
         run: |
@@ -55,20 +64,24 @@ jobs:
             --dir=./downloads \
             --seed-time=0 \
             --max-overall-upload-limit=1K \
-            --bt-max-peers=50 \
+            --bt-tracker="$TRACKER_LIST" \
+            --bt-max-peers=100 \
             --bt-request-peer-speed-limit=100K \
-            --max-connection-per-server=5 \
-            --split=5 \
+            --max-connection-per-server=16 \
+            --max-concurrent-downloads=1 \
+            --split=16 \
+            --min-split-size=1M \
             --enable-dht=true \
             --bt-enable-lpd=true \
             --follow-torrent=mem \
+            --summary-interval=10 \
             "$MAGNET_LINK"
           
           echo "Download completed!"
           ls -lah ./downloads
           
           # Get the downloaded filename
-          FILENAME=$(ls -1 ./downloads | head -n 1)
+          FILENAME=$(find ./downloads -type f | head -n 1 | xargs basename)
           # Sanitize for release tag
           RELEASE_NAME=$(echo "$FILENAME" | sed 's/\.[^.]*$//' | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]//g')
           RELEASE_NAME=$(echo "$RELEASE_NAME" | cut -c1-50)
