@@ -51,16 +51,24 @@ jobs:
           echo "TRACKER_LIST=$TRACKERS" >> $GITHUB_ENV
           echo "Added $(cat trackers.txt | wc -l) public trackers"
           
+      - name: Extract magnet links to file
+        run: |
+          # Save the parsed JSON output to a file
+          cat > parsed.json << 'EOFMARKER'
+          ${{ steps.issue-parser.outputs.jsonString }}
+          EOFMARKER
+          
+          # Extract magnet_links field using jq
+          jq -r '.magnet_links' parsed.json > magnets.txt
+          
+          # Show what we got
+          echo "Extracted magnet links:"
+          cat magnets.txt
+          
       - name: Parse and download torrents
         id: download
         run: |
           mkdir -p downloads
-          
-          # Get magnet links from parsed issue
-          MAGNET_LINKS="${{ fromJson(steps.issue-parser.outputs.jsonString).magnet_links }}"
-          
-          # Save magnet links to file (one per line)
-          echo "$MAGNET_LINKS" > magnets.txt
           
           # Count total magnets
           TOTAL_MAGNETS=$(grep -c "^magnet:" magnets.txt || echo "0")
