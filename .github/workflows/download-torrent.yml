@@ -50,8 +50,13 @@ jobs:
             fi
           done < magnets.txt
           
-          echo "magnet_links=$MAGNET_ARRAY" >> $GITHUB_OUTPUT
-          echo "total_count=$INDEX" >> $GITHUB_OUTPUT
+          # Use heredoc to safely output JSON
+          {
+            echo "magnet_links<<MAGNET_EOF"
+            echo "$MAGNET_ARRAY"
+            echo "MAGNET_EOF"
+            echo "total_count=$INDEX"
+          } >> $GITHUB_OUTPUT
           
           echo "Prepared $INDEX magnet links for parallel download"
           
@@ -59,7 +64,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const magnetData = JSON.parse('${{ steps.parse.outputs.magnet_links }}');
+            const magnetData = JSON.parse(`${{ steps.parse.outputs.magnet_links }}`);
             const totalCount = '${{ steps.parse.outputs.total_count }}';
             
             let magnetList = '';
