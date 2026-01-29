@@ -223,10 +223,12 @@ jobs:
           
       - name: Comment - Success
         if: success()
+        env:
+          FILE_LIST: ${{ steps.download.outputs.file_list }}
         uses: actions/github-script@v7
         with:
           script: |
-            const fileList = `${{ steps.download.outputs.file_list }}`;
+            const fileList = process.env.FILE_LIST;
             
             github.rest.issues.createComment({
               issue_number: ${{ needs.prepare.outputs.issue_number }},
