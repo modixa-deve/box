@@ -8,6 +8,7 @@ body:
       value: |
         ## Torrent Download Request
         Submit a magnet link to download and create a GitHub release.
+        The release will be automatically named based on the torrent's filename.
         
   - type: input
     id: magnet_link
@@ -18,19 +19,10 @@ body:
     validations:
       required: true
       
-  - type: input
-    id: release_name
-    attributes:
-      label: Release Name
-      description: Name for the GitHub release (will be used as tag)
-      placeholder: "v1.0.0 or my-download-1"
-    validations:
-      required: true
-      
   - type: textarea
     id: description
     attributes:
-      label: Release Description
+      label: Release Description (Optional)
       description: Optional description for the release
       placeholder: "Downloaded from..."
     validations:
