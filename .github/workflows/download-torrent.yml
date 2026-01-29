@@ -153,17 +153,32 @@ jobs:
           echo "Download completed!"
           ls -lah ./downloads
           
-          # Get downloaded filename(s)
+          # Count files (including files in subdirectories)
           FILE_COUNT=$(find ./downloads -type f | wc -l)
-          FILENAME=$(find ./downloads -type f | head -n 1 | xargs basename)
           
-          # Create release name
+          # Get first filename (properly handling spaces)
+          FIRST_FILE=$(find ./downloads -type f -print0 | head -z -n 1)
+          if [ -n "$FIRST_FILE" ]; then
+            FILENAME=$(basename "$FIRST_FILE")
+          else
+            FILENAME="torrent-${{ matrix.magnet.index }}"
+          fi
+          
+          echo "First file: $FILENAME"
+          echo "Total files: $FILE_COUNT"
+          
+          # Create release name (properly handle spaces)
           RELEASE_NAME=$(echo "$FILENAME" | sed 's/\.[^.]*$//' | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]//g' | cut -c1-40)
           RELEASE_TAG="torrent-${{ matrix.magnet.index }}-${RELEASE_NAME}-$(date +%s)"
           
-          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
-          echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
-          echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
+          # Save outputs (escape special characters)
+          {
+            echo "filename<<EOF"
+            echo "$FILENAME"
+            echo "EOF"
+            echo "release_tag=$RELEASE_TAG"
+            echo "file_count=$FILE_COUNT"
+          } >> $GITHUB_OUTPUT
           
       - name: Create Release for this torrent
         id: create_release
@@ -178,7 +193,7 @@ jobs:
             
             ---
             Downloaded from issue #${{ needs.prepare.outputs.issue_number }}
-          files: ./downloads/*
+          files: ./downloads/**
           draft: false
           prerelease: false
         env:
