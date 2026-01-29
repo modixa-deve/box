@@ -126,9 +126,13 @@ jobs:
         run: |
           mkdir -p downloads
           
+          # Generate timestamp at start
+          TIMESTAMP=$(date +%s)
+          
           echo "============================================"
           echo "Downloading Torrent #${{ matrix.magnet.index }}"
           echo "Info Hash: ${{ matrix.magnet.hash }}"
+          echo "Timestamp: $TIMESTAMP"
           echo "============================================"
           
           aria2c \
@@ -171,7 +175,7 @@ jobs:
           
           # Create release name (properly handle spaces)
           RELEASE_NAME=$(echo "$FILENAME" | sed 's/\.[^.]*$//' | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]//g' | cut -c1-40)
-          RELEASE_TAG="torrent-${{ matrix.magnet.index }}-${RELEASE_NAME}-$(date +%s)"
+          RELEASE_TAG="${TIMESTAMP}-${RELEASE_NAME}"
           
           # Build file list with URLs for release description
           FILE_LIST=""
@@ -193,6 +197,7 @@ jobs:
             echo "EOF"
             echo "release_tag=$RELEASE_TAG"
             echo "file_count=$FILE_COUNT"
+            echo "timestamp=$TIMESTAMP"
             echo "file_list<<FILELIST_EOF"
             printf '%s' "$FILE_LIST"
             echo ""
@@ -204,9 +209,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.download.outputs.release_tag }}
-          name: "Torrent #${{ matrix.magnet.index }} - ${{ steps.download.outputs.filename }}"
+          name: "${{ steps.download.outputs.timestamp }} - ${{ steps.download.outputs.filename }}"
           body: |
-            **Torrent #${{ matrix.magnet.index }}**
+            **Timestamp:** ${{ steps.download.outputs.timestamp }}
+            **Torrent #:** ${{ matrix.magnet.index }}
             **Info Hash:** `${{ matrix.magnet.hash }}`
             **Files:** ${{ steps.download.outputs.file_count }}
             
@@ -236,6 +242,7 @@ jobs:
               repo: context.repo.repo,
               body: `✅ **Torrent #${{ matrix.magnet.index }} - Complete!**
 
+            **Timestamp:** ${{ steps.download.outputs.timestamp }}
             **Info Hash:** \`${{ matrix.magnet.hash }}\`
             **Filename:** \`${{ steps.download.outputs.filename }}\`
             **Files:** ${{ steps.download.outputs.file_count }}
