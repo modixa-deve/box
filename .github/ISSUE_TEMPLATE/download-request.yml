@@ -1,5 +1,5 @@
 name: Download Request
-description: Submit a magnet link for automated download
+description: Submit magnet links for automated download
 title: "[Download]: "
 labels: ["download-request"]
 body:
@@ -7,15 +7,18 @@ body:
     attributes:
       value: |
         ## Torrent Download Request
-        Submit a magnet link to download and create a GitHub release.
-        The release will be automatically named based on the torrent's filename.
+        Submit one or more magnet links to download and create a GitHub release.
+        **Enter one magnet link per line.**
         
-  - type: input
-    id: magnet_link
+  - type: textarea
+    id: magnet_links
     attributes:
-      label: Magnet Link
-      description: Paste the complete magnet link here
-      placeholder: "magnet:?xt=urn:btih:..."
+      label: Magnet Links
+      description: Paste magnet links here (one per line)
+      placeholder: |
+        magnet:?xt=urn:btih:...
+        magnet:?xt=urn:btih:...
+      render: text
     validations:
       required: true
       
