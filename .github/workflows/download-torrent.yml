@@ -175,13 +175,16 @@ jobs:
           
           # Build file list with URLs for release description
           FILE_LIST=""
-          while IFS= read -r filepath; do
+          while IFS= read -r -d '' filepath; do
             filename=$(basename "$filepath")
-            # URL encode the filename for the download URL
-            encoded_filename=$(echo "$filename" | jq -sRr @uri)
+            # URL encode the filename (replace spaces with %20, etc)
+            encoded_filename=$(printf '%s' "$filename" | jq -sRr @uri)
             download_url="${{ github.server_url }}/${{ github.repository }}/releases/download/${RELEASE_TAG}/${encoded_filename}"
-            FILE_LIST="${FILE_LIST}- [\`${filename}\`](${download_url})\n"
-          done < <(find ./downloads -type f)
+            FILE_LIST="${FILE_LIST}- [\`${filename}\`](${download_url})"$'\n'
+          done < <(find ./downloads -type f -print0)
+          
+          # Remove trailing newline
+          FILE_LIST="${FILE_LIST%$'\n'}"
           
           # Save outputs (escape special characters)
           {
@@ -191,7 +194,8 @@ jobs:
             echo "release_tag=$RELEASE_TAG"
             echo "file_count=$FILE_COUNT"
             echo "file_list<<FILELIST_EOF"
-            echo -e "$FILE_LIST"
+            printf '%s' "$FILE_LIST"
+            echo ""
             echo "FILELIST_EOF"
           } >> $GITHUB_OUTPUT
           
