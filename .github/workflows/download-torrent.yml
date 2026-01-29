@@ -5,11 +5,14 @@ on:
     types: [opened]
 
 jobs:
-  download:
+  prepare:
     runs-on: ubuntu-latest
+    if: contains(github.event.issue.labels.*.name, 'download-request') || contains(github.event.issue.body, '### Magnet Links')
     permissions:
-      contents: write
       issues: write
+    outputs:
+      magnet_links: ${{ steps.parse.outputs.magnet_links }}
+      total_count: ${{ steps.parse.outputs.total_count }}
       
     steps:
       - name: Checkout repository
@@ -26,143 +29,178 @@ jobs:
         if: steps.issue-parser.outcome == 'failure'
         run: |
           echo "Not a download request issue, skipping..."
-          exit 0
+          exit 1
           
-      - name: Comment on issue - Starting download
+      - name: Parse magnet links into JSON array
+        id: parse
+        env:
+          PARSED_JSON: ${{ steps.issue-parser.outputs.jsonString }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+          
+          echo "$PARSED_JSON" > parsed.json
+          jq -r '.magnet_links' parsed.json > magnets.txt
+          
+          # Convert to JSON array for matrix
+          MAGNET_ARRAY="[]"
+          INDEX=0
+          while IFS= read -r MAGNET_LINK; do
+            if [[ "$MAGNET_LINK" =~ ^magnet: ]]; then
+              INFO_HASH=$(echo "$MAGNET_LINK" | grep -oP 'btih:\K[^&]+' || echo "unknown")
+              MAGNET_ARRAY=$(echo "$MAGNET_ARRAY" | jq --arg magnet "$MAGNET_LINK" --arg hash "$INFO_HASH" --arg idx "$INDEX" '. += [{"link": $magnet, "hash": $hash, "index": $idx}]')
+              INDEX=$((INDEX + 1))
+            fi
+          done < magnets.txt
+          
+          echo "magnet_links=$MAGNET_ARRAY" >> $GITHUB_OUTPUT
+          echo "total_count=$INDEX" >> $GITHUB_OUTPUT
+          
+          echo "Prepared $INDEX magnet links for parallel download"
+          
+      - name: Comment on issue - Starting downloads
         uses: actions/github-script@v7
         with:
           script: |
+            const magnetData = JSON.parse('${{ steps.parse.outputs.magnet_links }}');
+            const totalCount = '${{ steps.parse.outputs.total_count }}';
+            
+            let magnetList = '';
+            magnetData.forEach((m, i) => {
+              magnetList += `${i + 1}. Info Hash: \`${m.hash}\`\n`;
+            });
+            
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '🚀 Starting download... This may take a few minutes.'
-            })
+              body: `🚀 **Starting Parallel Download Process**
             
-      - name: Install aria2c and jq
+            **Total Torrents:** ${totalCount}
+            
+            **Magnet Links:**
+            ${magnetList}
+            
+            ⚡ All torrents will download in parallel. Please wait...`
+            })
+
+  download:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        magnet: ${{ fromJson(needs.prepare.outputs.magnet_links) }}
+      fail-fast: false
+      max-parallel: 10
+      
+    steps:
+      - name: Install aria2c
         run: |
           sudo apt-get update
-          sudo apt-get install -y aria2 jq
+          sudo apt-get install -y aria2
           
       - name: Download public tracker list
         run: |
           curl -o trackers.txt https://cf.trackerslist.com/best.txt
           TRACKERS=$(cat trackers.txt | tr '\n' ',' | sed 's/,$//')
           echo "TRACKER_LIST=$TRACKERS" >> $GITHUB_ENV
-          echo "Added $(cat trackers.txt | wc -l) public trackers"
           
-      - name: Extract magnet links to file
-        env:
-          PARSED_JSON: ${{ steps.issue-parser.outputs.jsonString }}
-        run: |
-          # Write JSON to file using environment variable
-          echo "$PARSED_JSON" > parsed.json
-          
-          # Extract magnet_links field using jq
-          jq -r '.magnet_links' parsed.json > magnets.txt
-          
-          # Show what we got
-          echo "Extracted magnet links:"
-          cat magnets.txt
-          
-      - name: Parse and download torrents
+      - name: Download torrent
         id: download
         run: |
           mkdir -p downloads
           
-          # Count total magnets
-          TOTAL_MAGNETS=$(grep -c "^magnet:" magnets.txt || echo "0")
-          echo "Found $TOTAL_MAGNETS magnet link(s)"
-          
-          if [ "$TOTAL_MAGNETS" -eq 0 ]; then
-            echo "Error: No valid magnet links found"
-            exit 1
-          fi
-          
-          # Download each magnet link
-          COUNTER=1
-          while IFS= read -r MAGNET_LINK; do
-            # Skip empty lines
-            if [ -z "$MAGNET_LINK" ]; then
-              continue
-            fi
-            
-            # Skip lines that don't start with magnet:
-            if [[ ! "$MAGNET_LINK" =~ ^magnet: ]]; then
-              continue
-            fi
-            
-            echo "============================================"
-            echo "Downloading torrent $COUNTER of $TOTAL_MAGNETS"
-            echo "============================================"
-            
-            aria2c \
-              --dir=./downloads \
-              --seed-time=0 \
-              --max-overall-upload-limit=1K \
-              --bt-tracker="$TRACKER_LIST" \
-              --bt-tracker-connect-timeout=5 \
-              --bt-tracker-timeout=10 \
-              --bt-max-peers=100 \
-              --bt-request-peer-speed-limit=100K \
-              --max-connection-per-server=16 \
-              --split=16 \
-              --min-split-size=1M \
-              --enable-dht=true \
-              --enable-dht6=false \
-              --bt-enable-lpd=true \
-              --enable-peer-exchange=true \
-              --follow-torrent=mem \
-              --summary-interval=10 \
-              --console-log-level=notice \
-              "$MAGNET_LINK" || echo "Warning: Failed to download torrent $COUNTER"
-            
-            COUNTER=$((COUNTER + 1))
-          done < magnets.txt
-          
           echo "============================================"
-          echo "All downloads completed!"
+          echo "Downloading Torrent #${{ matrix.magnet.index }}"
+          echo "Info Hash: ${{ matrix.magnet.hash }}"
           echo "============================================"
-          ls -lah ./downloads
           
-          # Count downloaded files
-          FILE_COUNT=$(find ./downloads -type f | wc -l)
+          aria2c \
+            --dir=./downloads \
+            --seed-time=0 \
+            --max-overall-upload-limit=1K \
+            --bt-tracker="$TRACKER_LIST" \
+            --bt-tracker-connect-timeout=5 \
+            --bt-tracker-timeout=10 \
+            --bt-max-peers=100 \
+            --bt-request-peer-speed-limit=100K \
+            --max-connection-per-server=16 \
+            --split=16 \
+            --min-split-size=1M \
+            --enable-dht=true \
+            --enable-dht6=false \
+            --bt-enable-lpd=true \
+            --enable-peer-exchange=true \
+            --follow-torrent=mem \
+            --summary-interval=10 \
+            --console-log-level=notice \
+            "${{ matrix.magnet.link }}"
           
-          if [ "$FILE_COUNT" -eq 0 ]; then
-            echo "Error: No files were downloaded"
-            exit 1
-          fi
+          # Get downloaded filename
+          FILENAME=$(find ./downloads -type f | head -n 1 | xargs basename)
+          echo "Downloaded: $FILENAME"
+          echo "filename=$FILENAME" >> $GITHUB_OUTPUT
           
-          echo "Successfully downloaded $FILE_COUNT file(s)"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: torrent-${{ matrix.magnet.index }}-${{ matrix.magnet.hash }}
+          path: ./downloads/*
+          retention-days: 1
+
+  create-release:
+    needs: [prepare, download]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-downloads
           
-          # Create release name from first file or timestamp
-          FIRST_FILE=$(find ./downloads -type f | head -n 1 | xargs basename)
+      - name: Organize files
+        id: organize
+        run: |
+          mkdir -p release-files
+          
+          # Move all files from artifact directories to release-files
+          find all-downloads -type f -exec mv {} release-files/ \;
+          
+          echo "Files to release:"
+          ls -lah release-files/
+          
+          FILE_COUNT=$(find release-files -type f | wc -l)
+          echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
+          
+          # Create release name
+          FIRST_FILE=$(find release-files -type f | head -n 1 | xargs basename)
           RELEASE_NAME=$(echo "$FIRST_FILE" | sed 's/\.[^.]*$//' | tr ' ' '-' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]//g' | cut -c1-40)
           RELEASE_TAG="${RELEASE_NAME}-$(date +%s)"
           
           echo "release_tag=$RELEASE_TAG" >> $GITHUB_OUTPUT
-          echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
           
-      - name: Create Release and Upload Files
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.download.outputs.release_tag }}
-          name: "Download Bundle - ${{ steps.download.outputs.file_count }} file(s)"
+          tag_name: ${{ steps.organize.outputs.release_tag }}
+          name: "Download Bundle - ${{ steps.organize.outputs.file_count }} file(s)"
           body: |
-            **Files Downloaded:** ${{ steps.download.outputs.file_count }}
-            
-            ${{ fromJson(steps.issue-parser.outputs.jsonString).description }}
+            **Files Downloaded:** ${{ steps.organize.outputs.file_count }}
+            **Download Method:** Parallel processing
             
             ---
             Downloaded via torrent from issue #${{ github.event.issue.number }}
-          files: ./downloads/*
+          files: release-files/*
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Comment on issue - Success
-        if: success()
         uses: actions/github-script@v7
         with:
           script: |
@@ -170,8 +208,15 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '✅ Download complete! Successfully downloaded ${{ steps.download.outputs.file_count }} file(s).\n\nRelease: [${{ steps.download.outputs.release_tag }}](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.download.outputs.release_tag }})'
+              body: `✅ **All Downloads Complete!**
+            
+            **Summary:**
+            - Total Files: ${{ steps.organize.outputs.file_count }}
+            - Download Method: Parallel processing (faster!)
+            
+            📦 **Release Created:** [${{ steps.organize.outputs.release_tag }}](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ steps.organize.outputs.release_tag }})`
             })
+            
             github.rest.issues.update({
               issue_number: context.issue.number,
               owner: context.repo.owner,
@@ -179,7 +224,7 @@ jobs:
               state: 'closed',
               state_reason: 'completed'
             })
-            
+          
       - name: Comment on issue - Failure
         if: failure()
         uses: actions/github-script@v7
@@ -189,5 +234,24 @@ jobs:
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '❌ Download failed. Please check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.'
+              body: '❌ **Release creation failed**\n\nSome torrents may have downloaded successfully. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.'
+            })
+
+  notify-failures:
+    needs: [prepare, download]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      
+    steps:
+      - name: Comment on issue - Download failures
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '⚠️ **Some downloads failed**\n\nOne or more torrents failed to download. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.\n\nSuccessful downloads (if any) will still be included in the release.'
             })
