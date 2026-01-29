@@ -1,0 +1,109 @@
+name: Download Torrent and Create Release
+
+on:
+  issues:
+    types: [opened, labeled]
+
+jobs:
+  download:
+    # Only run if issue has the download-request label
+    if: contains(github.event.issue.labels.*.name, 'download-request')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Parse issue body
+        uses: stefanbuck/github-issue-parser@v3
+        id: issue-parser
+        with:
+          template-path: .github/ISSUE_TEMPLATE/download-request.yml
+          
+      - name: Comment on issue - Starting download
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '🚀 Starting download... This may take a few minutes.'
+            })
+            
+      - name: Install aria2c
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2
+          
+      - name: Download torrent
+        id: download
+        run: |
+          mkdir -p downloads
+          MAGNET_LINK="${{ fromJson(steps.issue-parser.outputs.jsonString).magnet_link }}"
+          
+          echo "Starting download with aria2c..."
+          aria2c \
+            --dir=./downloads \
+            --seed-time=0 \
+            --max-overall-upload-limit=1K \
+            --bt-max-peers=50 \
+            --bt-request-peer-speed-limit=100K \
+            --max-connection-per-server=5 \
+            --split=5 \
+            --enable-dht=true \
+            --bt-enable-lpd=true \
+            --follow-torrent=mem \
+            "$MAGNET_LINK"
+          
+          echo "Download completed!"
+          ls -lah ./downloads
+          
+      - name: Create Release and Upload Files
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ fromJson(steps.issue-parser.outputs.jsonString).release_name }}
+          name: ${{ fromJson(steps.issue-parser.outputs.jsonString).release_name }}
+          body: |
+            ${{ fromJson(steps.issue-parser.outputs.jsonString).description }}
+            
+            ---
+            Downloaded via torrent from issue #${{ github.event.issue.number }}
+          files: ./downloads/**/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Comment on issue - Success
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✅ Download complete! Release created: ${{ fromJson(steps.issue-parser.outputs.jsonString).release_name }}'
+            })
+            github.rest.issues.update({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'closed'
+            })
+            
+      - name: Comment on issue - Failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '❌ Download failed. Please check the workflow logs for details.'
+            })
